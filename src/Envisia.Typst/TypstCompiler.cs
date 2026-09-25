@@ -8,7 +8,7 @@ namespace Envisia.Typst;
 /// <summary>Entry point to the bundled Typst compiler.</summary>
 public static unsafe class TypstCompiler
 {
-    private const uint ExpectedAbiVersion = 2;
+    private const uint ExpectedAbiVersion = 3;
 
     /// <summary>
     /// Compiles Typst markup into PDF bytes. Everything the document needs — fonts and referenced files — is passed
@@ -34,6 +34,7 @@ public static unsafe class TypstCompiler
 
         var markup = Encoding.UTF8.GetBytes(request.Markup);
         var creator = Encoding.UTF8.GetBytes(request.Creator ?? string.Empty);
+        var standards = Encoding.UTF8.GetBytes(string.Join(',', request.Standards.Select(TypstPdfStandards.Name)));
         var names = new byte[request.Files.Count][];
         for (var i = 0; i < request.Files.Count; i++)
         {
@@ -67,7 +68,7 @@ public static unsafe class TypstCompiler
                 };
             }
 
-            return Invoke(request, markup, creator, fonts, files, names);
+            return Invoke(request, markup, creator, standards, fonts, files, names);
         }
         finally
         {
@@ -82,6 +83,7 @@ public static unsafe class TypstCompiler
         TypstCompileRequest request,
         byte[] markup,
         byte[] creator,
+        byte[] standards,
         TypstBuffer[] fonts,
         TypstNamedBuffer[] files,
         byte[][] names
@@ -92,6 +94,7 @@ public static unsafe class TypstCompiler
         {
             fixed (byte* markupPtr = markup)
             fixed (byte* creatorPtr = creator)
+            fixed (byte* standardsPtr = standards)
             {
                 fixed (TypstBuffer* fontPtr = fonts)
                 {
@@ -118,6 +121,9 @@ public static unsafe class TypstCompiler
                             creatorPtr,
                             (nuint)creator.Length,
                             request.Creator is null ? (byte)0 : (byte)1,
+                            standardsPtr,
+                            (nuint)standards.Length,
+                            request.Tagged ? (byte)1 : (byte)0,
                             &result
                         );
 

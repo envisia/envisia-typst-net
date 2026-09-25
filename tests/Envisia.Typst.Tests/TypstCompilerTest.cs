@@ -183,6 +183,125 @@ public class TypstCompilerTest
     }
 
     [Test]
+    public void Writes_Pdf_A_3b_With_An_Output_Intent()
+    {
+        var pdf = TypstCompiler.CompilePdf(
+            new TypstCompileRequest
+            {
+                Markup =
+                    "#set document(title: \"Archiv\", date: datetime.today())\n#set text(font: \"Open Sans\")\n#text(\"Archiv\")",
+                Fonts = Fonts,
+                Today = new DateOnly(2024, 5, 17),
+                Standards = [TypstPdfStandard.PdfA3b],
+            }
+        );
+
+        var raw = Encoding.Latin1.GetString(pdf);
+        raw.ShouldContain("<pdfaid:part>3</pdfaid:part>");
+        raw.ShouldContain("<pdfaid:conformance>B</pdfaid:conformance>");
+        raw.ShouldContain("/OutputIntents");
+    }
+
+    [Test]
+    public void Writes_No_Pdf_A_Identification_Without_A_Standard()
+    {
+        Encoding.Latin1.GetString(CompileWithCreator(null)).ShouldNotContain("pdfaid:part");
+    }
+
+    [Test]
+    public void Reports_A_Document_That_Violates_The_Requested_Standard()
+    {
+        // PDF/A requires a creation date, which the document does not set.
+        var exception = Should.Throw<TypstCompileException>(() =>
+            TypstCompiler.CompilePdf(
+                new TypstCompileRequest
+                {
+                    Markup = "#set text(font: \"Open Sans\")\n#text(\"ohne Datum\")",
+                    Fonts = Fonts,
+                    Standards = [TypstPdfStandard.PdfA3b],
+                }
+            )
+        );
+
+        exception.Diagnostics.ShouldStartWith("error");
+    }
+
+    [Test]
+    public void Rejects_Standards_That_Cannot_Be_Combined()
+    {
+        var exception = Should.Throw<TypstCompileException>(() =>
+            TypstCompiler.CompilePdf(
+                new TypstCompileRequest
+                {
+                    Markup = "#text(\"x\")",
+                    Fonts = Fonts,
+                    Standards = [TypstPdfStandard.PdfA2b, TypstPdfStandard.PdfA3b],
+                }
+            )
+        );
+
+        exception.Diagnostics.ShouldContain("at most one PDF/A standard");
+    }
+
+    [Test]
+    public void Rejects_A_Pdf_Version_The_Standard_Does_Not_Allow()
+    {
+        var exception = Should.Throw<TypstCompileException>(() =>
+            TypstCompiler.CompilePdf(
+                new TypstCompileRequest
+                {
+                    Markup = "#text(\"x\")",
+                    Fonts = Fonts,
+                    Standards = [TypstPdfStandard.Pdf14, TypstPdfStandard.PdfA3b],
+                }
+            )
+        );
+
+        exception.Diagnostics.ShouldContain("hint:");
+    }
+
+    [Test]
+    public void Accepts_Every_Standard_Name()
+    {
+        foreach (var standard in Enum.GetValues<TypstPdfStandard>())
+        {
+            try
+            {
+                TypstCompiler.CompilePdf(
+                    new TypstCompileRequest
+                    {
+                        Markup =
+                            "#set document(title: \"Titel\", date: datetime.today())\n#set text(font: \"Open Sans\", lang: \"de\")\n= Titel\nText",
+                        Fonts = Fonts,
+                        Today = new DateOnly(2024, 5, 17),
+                        Standards = [standard],
+                    }
+                );
+            }
+            catch (TypstCompileException exception)
+            {
+                // A document can fail a standard, but the native layer must know every name the enum maps to.
+                exception.Diagnostics.ShouldNotContain("unknown pdf standard", customMessage: standard.ToString());
+            }
+        }
+    }
+
+    [Test]
+    public void Leaves_The_Structure_Tree_Out_Of_An_Untagged_Document()
+    {
+        TypstCompileRequest Request(bool tagged) =>
+            new()
+            {
+                Markup = "#set text(font: \"Open Sans\")\n= Titel\nText",
+                Fonts = Fonts,
+                Tagged = tagged,
+            };
+
+        Encoding.Latin1.GetString(TypstCompiler.CompilePdf(Request(true))).ShouldContain("/StructTreeRoot");
+        Encoding.Latin1.GetString(TypstCompiler.CompilePdf(Request(false))).ShouldNotContain("/StructTreeRoot");
+    }
+
+    [Test]
     public void Concurrent_Calls_Produce_The_Same_Pdf_As_A_Call_On_Its_Own()
     {
         var requests = Enumerable.Range(1, 8).Select(CreateIsolatedRequest).ToArray();

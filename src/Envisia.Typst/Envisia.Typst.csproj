@@ -3,7 +3,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <IsAotCompatible>true</IsAotCompatible>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <VersionPrefix>0.1.0</VersionPrefix>
+    <VersionPrefix>0.2.0</VersionPrefix>
 
     <PackageId>Envisia.Typst</PackageId>
     <Description>Compiles Typst markup to PDF in process. Ships the Typst compiler as a native library for Linux, macOS and Windows on x64 and arm64. Fonts and files are handed in from memory; the compiler reads neither the disk nor the network.</Description>

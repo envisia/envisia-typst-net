@@ -9,11 +9,11 @@ use typst::foundations::{Bytes, Smart};
 use typst::syntax::DiagSpan;
 use typst::{World, WorldExt};
 use typst_layout::PagedDocument;
-use typst_pdf::PdfOptions;
+use typst_pdf::{PdfOptions, PdfStandard, PdfStandards};
 
 use crate::world::EnvisiaWorld;
 
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
 
 pub const STATUS_OK: i32 = 0;
 pub const STATUS_COMPILE_ERROR: i32 = 1;
@@ -83,7 +83,9 @@ pub extern "C" fn envisia_typst_abi_version() -> u32 {
 /// `result` must point at a writable `EvTypstResult`. The slice arguments must either be null with a
 /// zero count or point at `count` readable elements that stay alive for the duration of the call.
 /// Every buffer referenced from an element must stay readable for the duration of the call. With `creator_set`
-/// non-zero, `creator` must point at `creator_len` readable bytes (or be null with a zero length).
+/// non-zero, `creator` must point at `creator_len` readable bytes (or be null with a zero length). `standards` is a
+/// comma separated list of Typst's standard names (`a-3b`, `ua-1`, ...) in `standards_len` readable bytes, or null
+/// with a zero length for none; `tagged` non-zero writes a tagged PDF.
 #[no_mangle]
 pub unsafe extern "C" fn envisia_typst_compile_pdf(
     markup: *const u8,
@@ -98,6 +100,9 @@ pub unsafe extern "C" fn envisia_typst_compile_pdf(
     creator: *const u8,
     creator_len: usize,
     creator_set: u8,
+    standards: *const u8,
+    standards_len: usize,
+    tagged: u8,
     result: *mut EvTypstResult,
 ) -> i32 {
     if result.is_null() {
@@ -161,12 +166,35 @@ pub unsafe extern "C" fn envisia_typst_compile_pdf(
             }
         };
 
+        let standards = match read_str(standards, standards_len) {
+            Some(value) => value,
+            None => {
+                return EvTypstResult::owned(
+                    STATUS_INVALID_INPUT,
+                    Vec::new(),
+                    "standards are not valid UTF-8".to_owned(),
+                )
+            }
+        };
+
+        let standards = match parse_standards(&standards) {
+            Ok(value) => value,
+            Err(message) => return EvTypstResult::owned(STATUS_INVALID_INPUT, Vec::new(), message),
+        };
+
+        let options = PdfOptions {
+            creator,
+            standards,
+            tagged: tagged != 0,
+            ..PdfOptions::default()
+        };
+
         let now = if year > 0 {
             Some((year, month, day))
         } else {
             None
         };
-        compile(markup, fonts, files, now, creator)
+        compile(markup, fonts, files, now, &options)
     }));
 
     let value = outcome.unwrap_or_else(|_| {
@@ -203,7 +231,7 @@ fn compile(
     fonts: Vec<Bytes>,
     files: Vec<(String, Bytes)>,
     now: Option<(i32, u8, u8)>,
-    creator: Smart<Option<String>>,
+    options: &PdfOptions,
 ) -> EvTypstResult {
     let world = match EnvisiaWorld::new(markup, fonts, files, now) {
         Ok(world) => world,
@@ -218,11 +246,7 @@ fn compile(
         );
     }
 
-    let options = PdfOptions {
-        creator,
-        ..PdfOptions::default()
-    };
-    let result = export(&world, &options);
+    let result = export(&world, options);
 
     // comemo's memoization cache is process global and never shrinks on its own. Each document is rendered once, so
     // nothing is kept for the next call: a large report otherwise stays resident until later calls age it out.
@@ -260,6 +284,54 @@ fn export(world: &EnvisiaWorld, options: &PdfOptions) -> EvTypstResult {
             format_diagnostics(world, &diagnostics),
         ),
     }
+}
+
+fn parse_standards(names: &str) -> Result<PdfStandards, String> {
+    let mut list = Vec::new();
+    for name in names
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        list.push(parse_standard(name).ok_or_else(|| format!("unknown pdf standard '{name}'"))?);
+    }
+
+    if list.is_empty() {
+        return Ok(PdfStandards::default());
+    }
+
+    PdfStandards::new(&list).map_err(|error| {
+        let mut message = error.message().to_string();
+        for hint in error.hints() {
+            message.push_str("\n  hint: ");
+            message.push_str(hint);
+        }
+        message
+    })
+}
+
+// The names of typst's `--pdf-standard` option, which TypstPdfStandard maps onto.
+fn parse_standard(name: &str) -> Option<PdfStandard> {
+    Some(match name {
+        "1.4" => PdfStandard::V_1_4,
+        "1.5" => PdfStandard::V_1_5,
+        "1.6" => PdfStandard::V_1_6,
+        "1.7" => PdfStandard::V_1_7,
+        "2.0" => PdfStandard::V_2_0,
+        "a-1b" => PdfStandard::A_1b,
+        "a-1a" => PdfStandard::A_1a,
+        "a-2b" => PdfStandard::A_2b,
+        "a-2u" => PdfStandard::A_2u,
+        "a-2a" => PdfStandard::A_2a,
+        "a-3b" => PdfStandard::A_3b,
+        "a-3u" => PdfStandard::A_3u,
+        "a-3a" => PdfStandard::A_3a,
+        "a-4" => PdfStandard::A_4,
+        "a-4f" => PdfStandard::A_4f,
+        "a-4e" => PdfStandard::A_4e,
+        "ua-1" => PdfStandard::Ua_1,
+        _ => return None,
+    })
 }
 
 fn format_diagnostics(world: &EnvisiaWorld, diagnostics: &EcoVec<SourceDiagnostic>) -> String {

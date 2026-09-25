@@ -23,6 +23,9 @@ internal static unsafe partial class TypstNative
         byte* creator,
         nuint creatorLength,
         byte creatorSet,
+        byte* standards,
+        nuint standardsLength,
+        byte tagged,
         TypstNativeResult* result
     );
 

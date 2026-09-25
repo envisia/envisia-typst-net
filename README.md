@@ -39,7 +39,30 @@ var pdf = TypstCompiler.CompilePdf(
 - `Creator` sets the application the PDF names as its creator (`/Creator` and XMP `CreatorTool`). Left unset,
   Typst names itself (`Typst 0.15.1`); an empty string leaves the entry out. Typst writes no `/Producer`, and
   typst-pdf offers no way to set one.
+- `Standards` makes Typst enforce PDF standards, for example `[TypstPdfStandard.PdfA3b]` for an archivable
+  PDF/A-3b. Typst checks conformance while it writes the file and throws `TypstCompileException` when the document
+  violates one (PDF/A needs a creation date, `#set document(date: datetime.today())` with `Today` set). At most one
+  PDF/A and one PDF/UA standard can be combined, plus a PDF version both allow. Left empty the output is PDF 1.7.
+- `Tagged` (on by default, as in Typst) writes a structure tree for screen readers. PDF/UA and the PDF/A "a" levels
+  need it; a long report nobody reads with assistive technology renders faster and smaller without it.
 - `CompilePdf` blocks the calling thread while Typst compiles.
+
+### Characters the fonts cannot show
+
+Typst only has the fonts it is handed. A character none of them has is drawn as the font's missing glyph box, and
+under a PDF/A standard Typst refuses the whole document (`the text ... could not be displayed`). User supplied text
+can go through `TypstFontCoverage` first:
+
+```csharp
+var coverage = TypstFontCoverage.Of(fonts); // once per set of fonts, safe to share
+var text = coverage.Displayable(userText);
+```
+
+`Of` reads the `cmap` tables of the fonts (every face of a collection). `Displayable` keeps what they can show and
+replaces the rest where there is an obvious substitute: other spaces become a space, line and paragraph separators a
+line break, the hyphens that only differ in their break behaviour a hyphen-minus, `←`/`→`/`⇒` become `<-`/`->`/`=>`
+and characters with a compatibility decomposition (`₂`, full width forms) their decomposition. Anything else, such as
+emoji, symbol font code points or scripts the fonts lack, is dropped. Text that needs no change is returned as is.
 
 ### Thread safety
 

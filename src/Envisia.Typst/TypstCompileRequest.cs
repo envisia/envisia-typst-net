@@ -24,4 +24,19 @@ public sealed class TypstCompileRequest
     /// empty string leaves the entry out.
     /// </summary>
     public string? Creator { get; init; }
+
+    /// <summary>
+    /// The PDF standards the document has to conform to, for example <see cref="TypstPdfStandard.PdfA3b"/>. Typst
+    /// checks conformance while it writes the PDF and fails the call with diagnostics when the document violates one.
+    /// Left empty, the output is a plain PDF 1.7. At most one PDF/A and one PDF/UA standard can be combined, plus a
+    /// PDF version they both allow.
+    /// </summary>
+    public IReadOnlyList<TypstPdfStandard> Standards { get; init; } = [];
+
+    /// <summary>
+    /// Whether the PDF carries a structure tree (a tagged PDF) for screen readers and reflow. On by default, as in
+    /// Typst. A long document nobody reads through assistive technology renders faster and smaller without it.
+    /// PDF/UA and the PDF/A "a" levels require it.
+    /// </summary>
+    public bool Tagged { get; init; } = true;
 }

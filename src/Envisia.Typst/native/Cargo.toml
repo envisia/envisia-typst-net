@@ -1,0 +1,21 @@
+[package]
+name = "envisia_typst"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+name = "envisia_typst"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+typst = "0.15.1"
+typst-layout = "0.15.1"
+typst-pdf = "0.15.1"
+comemo = "0.5"
+
+[profile.release]
+opt-level = 2
+codegen-units = 16
+strip = true

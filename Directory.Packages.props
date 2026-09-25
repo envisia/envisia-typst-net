@@ -1,0 +1,16 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageVersion Include="Microsoft.Testing.Extensions.TrxReport" Version="2.4.1" />
+    <PackageVersion Include="NUnit" Version="4.6.1" />
+    <PackageVersion Include="NUnit.Analyzers" Version="4.15.0" />
+    <PackageVersion Include="NUnit3TestAdapter" Version="6.3.0" />
+    <PackageVersion Include="Shouldly" Version="4.3.0" />
+  </ItemGroup>
+  <!-- CI runs the tests against the packed Envisia.Typst package instead of the project. -->
+  <ItemGroup Condition="'$(EnvisiaTypstPackageVersion)' != ''">
+    <PackageVersion Include="Envisia.Typst" Version="$(EnvisiaTypstPackageVersion)" />
+  </ItemGroup>
+</Project>

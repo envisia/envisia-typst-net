@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <OutputType>Exe</OutputType>
+    <EnableNUnitRunner>true</EnableNUnitRunner>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(EnvisiaTypstPackageVersion)' == ''">
+    <ProjectReference Include="..\..\src\Envisia.Typst\Envisia.Typst.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(EnvisiaTypstPackageVersion)' != ''">
+    <PackageReference Include="Envisia.Typst" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Fonts\OpenSans-Regular.ttf">
+      <LogicalName>Envisia.Typst.Tests.open-sans-regular.ttf</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Testing.Extensions.TrxReport" />
+    <PackageReference Include="NUnit" />
+    <PackageReference Include="NUnit.Analyzers">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="NUnit3TestAdapter" />
+    <PackageReference Include="Shouldly" />
+  </ItemGroup>
+</Project>

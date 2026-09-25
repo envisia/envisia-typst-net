@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsAotCompatible>true</IsAotCompatible>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <VersionPrefix>0.1.0</VersionPrefix>
+
+    <PackageId>Envisia.Typst</PackageId>
+    <Description>Compiles Typst markup to PDF in process. Ships the Typst compiler as a native library for Linux, macOS and Windows on x64 and arm64. Fonts and files are handed in from memory; the compiler reads neither the disk nor the network.</Description>
+    <Authors>Envisia</Authors>
+    <Copyright>Copyright (c) Envisia</Copyright>
+    <PackageTags>typst;pdf;typesetting;reporting</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" Visible="false" />
+    <None Include="..\..\THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+
+  <Import Project="Envisia.Typst.Native.targets" />
+</Project>

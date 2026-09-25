@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Envisia.Typst/Envisia.Typst.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Envisia.Typst.Tests/Envisia.Typst.Tests.csproj" />
+  </Folder>
+</Solution>

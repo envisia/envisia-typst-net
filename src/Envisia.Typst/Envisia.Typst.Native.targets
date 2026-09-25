@@ -1,0 +1,107 @@
+<Project>
+  <!--
+    The Typst compiler is a Rust cdylib built from native/.
+
+    A local build compiles it for the host platform and copies it next to the assembly, which is all a project
+    reference and the tests need.
+
+    The package carries one prebuilt library per runtime identifier under runtimes/<rid>/native/, where the .NET host
+    picks the matching one at run time. CI builds each library on its own platform and hands them to `dotnet pack`
+    through EnvisiaTypstRuntimesDirectory, a directory laid out as <rid>/<library>; setting it also switches the host
+    build off, so packing needs no Rust toolchain.
+
+    EnvisiaTypstSkipNativeBuild=true reuses whatever already sits in native/target.
+    EnvisiaTypstLibraryPath points at a prebuilt host library instead.
+    EnvisiaTypstAllowMissingRuntimes=true packs whichever runtimes are present, for a local test package.
+  -->
+  <PropertyGroup>
+    <EnvisiaTypstNativeDirectory>$(MSBuildThisFileDirectory)native\</EnvisiaTypstNativeDirectory>
+    <EnvisiaTypstCargoProfile Condition="'$(EnvisiaTypstCargoProfile)' == ''">release</EnvisiaTypstCargoProfile>
+    <EnvisiaTypstLibraryName Condition="$([MSBuild]::IsOSPlatform('OSX'))"
+      >libenvisia_typst.dylib</EnvisiaTypstLibraryName
+    >
+    <EnvisiaTypstLibraryName Condition="$([MSBuild]::IsOSPlatform('Windows'))"
+      >envisia_typst.dll</EnvisiaTypstLibraryName
+    >
+    <EnvisiaTypstLibraryName Condition="'$(EnvisiaTypstLibraryName)' == ''"
+      >libenvisia_typst.so</EnvisiaTypstLibraryName
+    >
+    <EnvisiaTypstLibraryPath Condition="'$(EnvisiaTypstLibraryPath)' == ''"
+      >$(EnvisiaTypstNativeDirectory)target\$(EnvisiaTypstCargoProfile)\$(EnvisiaTypstLibraryName)</EnvisiaTypstLibraryPath
+    >
+    <_EnvisiaTypstRuntimesDirectory Condition="'$(EnvisiaTypstRuntimesDirectory)' != ''"
+      >$([MSBuild]::NormalizeDirectory('$(EnvisiaTypstRuntimesDirectory)'))</_EnvisiaTypstRuntimesDirectory
+    >
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EnvisiaTypstNativeSource Include="$(EnvisiaTypstNativeDirectory)Cargo.toml" />
+    <EnvisiaTypstNativeSource Include="$(EnvisiaTypstNativeDirectory)Cargo.lock" />
+    <EnvisiaTypstNativeSource Include="$(EnvisiaTypstNativeDirectory).cargo\config.toml" />
+    <EnvisiaTypstNativeSource Include="$(EnvisiaTypstNativeDirectory)src\**\*.rs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EnvisiaTypstRuntime Include="linux-x64" Library="libenvisia_typst.so" />
+    <EnvisiaTypstRuntime Include="linux-arm64" Library="libenvisia_typst.so" />
+    <EnvisiaTypstRuntime Include="osx-x64" Library="libenvisia_typst.dylib" />
+    <EnvisiaTypstRuntime Include="osx-arm64" Library="libenvisia_typst.dylib" />
+    <EnvisiaTypstRuntime Include="win-x64" Library="envisia_typst.dll" />
+    <EnvisiaTypstRuntime Include="win-arm64" Library="envisia_typst.dll" />
+  </ItemGroup>
+
+  <Target
+    Name="EnvisiaTypstBuildNative"
+    BeforeTargets="BeforeBuild"
+    Condition="'$(EnvisiaTypstSkipNativeBuild)' != 'true' and '$(_EnvisiaTypstRuntimesDirectory)' == ''"
+    Inputs="@(EnvisiaTypstNativeSource)"
+    Outputs="$(EnvisiaTypstLibraryPath)"
+  >
+    <Exec
+      Command="cargo build --profile $(EnvisiaTypstCargoProfile) --locked"
+      WorkingDirectory="$(EnvisiaTypstNativeDirectory)"
+      ConsoleToMsBuild="true"
+    />
+  </Target>
+
+  <Target
+    Name="EnvisiaTypstIncludeNative"
+    BeforeTargets="AssignTargetPaths"
+    DependsOnTargets="EnvisiaTypstBuildNative"
+    Condition="'$(_EnvisiaTypstRuntimesDirectory)' == ''"
+  >
+    <Error
+      Condition="!Exists('$(EnvisiaTypstLibraryPath)')"
+      Text="The Typst native library is missing at $(EnvisiaTypstLibraryPath). Install a Rust toolchain and run 'cargo build --release' in $(EnvisiaTypstNativeDirectory), or set EnvisiaTypstLibraryPath to a prebuilt library."
+    />
+    <ItemGroup>
+      <None Include="$(EnvisiaTypstLibraryPath)">
+        <Link>$(EnvisiaTypstLibraryName)</Link>
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+        <Pack>false</Pack>
+        <Visible>false</Visible>
+      </None>
+    </ItemGroup>
+  </Target>
+
+  <Target Name="EnvisiaTypstPackNative" BeforeTargets="_GetPackageFiles">
+    <Error
+      Condition="'$(_EnvisiaTypstRuntimesDirectory)' == ''"
+      Text="Packing needs the prebuilt native libraries: set EnvisiaTypstRuntimesDirectory to a directory laid out as &lt;rid&gt;/&lt;library&gt;."
+    />
+    <Error
+      Condition="'$(EnvisiaTypstAllowMissingRuntimes)' != 'true' and !Exists('$(_EnvisiaTypstRuntimesDirectory)%(EnvisiaTypstRuntime.Identity)/%(EnvisiaTypstRuntime.Library)')"
+      Text="The native library for %(EnvisiaTypstRuntime.Identity) is missing at $(_EnvisiaTypstRuntimesDirectory)%(EnvisiaTypstRuntime.Identity)/%(EnvisiaTypstRuntime.Library)."
+    />
+    <ItemGroup>
+      <None
+        Include="$(_EnvisiaTypstRuntimesDirectory)%(EnvisiaTypstRuntime.Identity)/%(EnvisiaTypstRuntime.Library)"
+        Condition="Exists('$(_EnvisiaTypstRuntimesDirectory)%(EnvisiaTypstRuntime.Identity)/%(EnvisiaTypstRuntime.Library)')"
+        Pack="true"
+        PackagePath="runtimes/%(EnvisiaTypstRuntime.Identity)/native/"
+        Visible="false"
+      />
+    </ItemGroup>
+  </Target>
+</Project>

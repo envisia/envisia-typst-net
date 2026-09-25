@@ -8,7 +8,7 @@ namespace Envisia.Typst;
 /// <summary>Entry point to the bundled Typst compiler.</summary>
 public static unsafe class TypstCompiler
 {
-    private const uint ExpectedAbiVersion = 1;
+    private const uint ExpectedAbiVersion = 2;
 
     /// <summary>
     /// Compiles Typst markup into PDF bytes. Everything the document needs — fonts and referenced files — is passed
@@ -33,6 +33,7 @@ public static unsafe class TypstCompiler
         }
 
         var markup = Encoding.UTF8.GetBytes(request.Markup);
+        var creator = Encoding.UTF8.GetBytes(request.Creator ?? string.Empty);
         var names = new byte[request.Files.Count][];
         for (var i = 0; i < request.Files.Count; i++)
         {
@@ -66,7 +67,7 @@ public static unsafe class TypstCompiler
                 };
             }
 
-            return Invoke(request, markup, fonts, files, names);
+            return Invoke(request, markup, creator, fonts, files, names);
         }
         finally
         {
@@ -80,6 +81,7 @@ public static unsafe class TypstCompiler
     private static byte[] Invoke(
         TypstCompileRequest request,
         byte[] markup,
+        byte[] creator,
         TypstBuffer[] fonts,
         TypstNamedBuffer[] files,
         byte[][] names
@@ -89,6 +91,7 @@ public static unsafe class TypstCompiler
         try
         {
             fixed (byte* markupPtr = markup)
+            fixed (byte* creatorPtr = creator)
             {
                 fixed (TypstBuffer* fontPtr = fonts)
                 {
@@ -112,6 +115,9 @@ public static unsafe class TypstCompiler
                             request.Today?.Year ?? 0,
                             (byte)(request.Today?.Month ?? 0),
                             (byte)(request.Today?.Day ?? 0),
+                            creatorPtr,
+                            (nuint)creator.Length,
+                            request.Creator is null ? (byte)0 : (byte)1,
                             &result
                         );
 

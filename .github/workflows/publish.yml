@@ -3,7 +3,7 @@ name: Publish NuGet Package
 on:
   push:
     tags:
-      - "v*.*.*"
+      - "**"
 
 permissions:
   contents: read
@@ -19,8 +19,8 @@ jobs:
         id: version
         run: |
           tag="${GITHUB_REF_NAME}"
-          if [[ ! "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$ ]]; then
-            echo "::error::Tag '$tag' is not a valid semantic version tag (expected vX.Y.Z or vX.Y.Z-prerelease)"
+          if [[ ! "$tag" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$ ]]; then
+            echo "::error::Tag '$tag' is not a semantic version (expected X.Y.Z or X.Y.Z-prerelease, optionally prefixed with v)"
             exit 1
           fi
           echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"

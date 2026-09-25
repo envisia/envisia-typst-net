@@ -17,4 +17,11 @@ public sealed class TypstCompileRequest
     /// documents deterministic instead of hiding a wall clock read inside the renderer.
     /// </summary>
     public DateOnly? Today { get; init; }
+
+    /// <summary>
+    /// The application the PDF names as its creator (<c>/Creator</c> and XMP <c>CreatorTool</c>), which viewers show
+    /// as the program that made the document. Left <see langword="null"/>, Typst names itself with its version; an
+    /// empty string leaves the entry out.
+    /// </summary>
+    public string? Creator { get; init; }
 }

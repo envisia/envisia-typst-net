@@ -5,7 +5,7 @@ use std::ptr;
 
 use typst::diag::{Severity, SourceDiagnostic, Warned};
 use typst::ecow::EcoVec;
-use typst::foundations::Bytes;
+use typst::foundations::{Bytes, Smart};
 use typst::syntax::DiagSpan;
 use typst::{World, WorldExt};
 use typst_layout::PagedDocument;
@@ -13,7 +13,7 @@ use typst_pdf::PdfOptions;
 
 use crate::world::EnvisiaWorld;
 
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 
 pub const STATUS_OK: i32 = 0;
 pub const STATUS_COMPILE_ERROR: i32 = 1;
@@ -82,7 +82,8 @@ pub extern "C" fn envisia_typst_abi_version() -> u32 {
 /// # Safety
 /// `result` must point at a writable `EvTypstResult`. The slice arguments must either be null with a
 /// zero count or point at `count` readable elements that stay alive for the duration of the call.
-/// Every buffer referenced from an element must stay readable for the duration of the call.
+/// Every buffer referenced from an element must stay readable for the duration of the call. With `creator_set`
+/// non-zero, `creator` must point at `creator_len` readable bytes (or be null with a zero length).
 #[no_mangle]
 pub unsafe extern "C" fn envisia_typst_compile_pdf(
     markup: *const u8,
@@ -94,6 +95,9 @@ pub unsafe extern "C" fn envisia_typst_compile_pdf(
     year: i32,
     month: u8,
     day: u8,
+    creator: *const u8,
+    creator_len: usize,
+    creator_set: u8,
     result: *mut EvTypstResult,
 ) -> i32 {
     if result.is_null() {
@@ -142,12 +146,27 @@ pub unsafe extern "C" fn envisia_typst_compile_pdf(
             }
         };
 
+        let creator = if creator_set == 0 {
+            Smart::Auto
+        } else {
+            match read_str(creator, creator_len) {
+                Some(value) => Smart::Custom(Some(value).filter(|value| !value.is_empty())),
+                None => {
+                    return EvTypstResult::owned(
+                        STATUS_INVALID_INPUT,
+                        Vec::new(),
+                        "creator is not valid UTF-8".to_owned(),
+                    )
+                }
+            }
+        };
+
         let now = if year > 0 {
             Some((year, month, day))
         } else {
             None
         };
-        compile(markup, fonts, files, now)
+        compile(markup, fonts, files, now, creator)
     }));
 
     let value = outcome.unwrap_or_else(|_| {
@@ -184,6 +203,7 @@ fn compile(
     fonts: Vec<Bytes>,
     files: Vec<(String, Bytes)>,
     now: Option<(i32, u8, u8)>,
+    creator: Smart<Option<String>>,
 ) -> EvTypstResult {
     let world = match EnvisiaWorld::new(markup, fonts, files, now) {
         Ok(world) => world,
@@ -198,7 +218,11 @@ fn compile(
         );
     }
 
-    let result = export(&world);
+    let options = PdfOptions {
+        creator,
+        ..PdfOptions::default()
+    };
+    let result = export(&world, &options);
 
     // comemo's memoization cache is process global and never shrinks on its own. Each document is rendered once, so
     // nothing is kept for the next call: a large report otherwise stays resident until later calls age it out.
@@ -214,7 +238,7 @@ fn same_comemo_as_typst(world: &dyn World) -> comemo::Tracked<'_, dyn World + '_
     comemo::Track::track(world)
 }
 
-fn export(world: &EnvisiaWorld) -> EvTypstResult {
+fn export(world: &EnvisiaWorld, options: &PdfOptions) -> EvTypstResult {
     let Warned { output, warnings } = typst::compile::<PagedDocument>(world);
 
     let document = match output {
@@ -228,7 +252,7 @@ fn export(world: &EnvisiaWorld) -> EvTypstResult {
         }
     };
 
-    match typst_pdf::pdf(&document, &PdfOptions::default()) {
+    match typst_pdf::pdf(&document, options) {
         Ok(bytes) => EvTypstResult::owned(STATUS_OK, bytes, format_diagnostics(world, &warnings)),
         Err(diagnostics) => EvTypstResult::owned(
             STATUS_COMPILE_ERROR,

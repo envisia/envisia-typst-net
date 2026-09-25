@@ -20,6 +20,9 @@ internal static unsafe partial class TypstNative
         int year,
         byte month,
         byte day,
+        byte* creator,
+        nuint creatorLength,
+        byte creatorSet,
         TypstNativeResult* result
     );
 

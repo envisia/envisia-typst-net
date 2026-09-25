@@ -36,8 +36,26 @@ var pdf = TypstCompiler.CompilePdf(
   example `#let d = json("data.json")`. A value read that way is data: Typst shows a string as text instead of
   parsing it, so untrusted input can never turn into executable markup. `Files` also serves `#import`, so a
   template can be split across several documents.
-- `CompilePdf` blocks the calling thread while Typst compiles. Concurrent calls are fine: each one builds its own
-  world, and Typst's memoization cache is lock protected.
+- `Creator` sets the application the PDF names as its creator (`/Creator` and XMP `CreatorTool`). Left unset,
+  Typst names itself (`Typst 0.15.1`); an empty string leaves the entry out. Typst writes no `/Producer`, and
+  typst-pdf offers no way to set one.
+- `CompilePdf` blocks the calling thread while Typst compiles.
+
+### Thread safety
+
+`CompilePdf` can be called from any number of threads at once. The binding keeps no state between calls: every
+call builds its own Typst world from the request's markup, fonts, files, date and creator, and nothing of it
+outlives the call. A test compiles eight different documents that share a file name on twelve threads and checks
+every PDF is byte for byte what the same request produces on its own.
+
+Typst itself keeps three things process wide, which a binding cannot scope to one call:
+
+- comemo's memoization cache. It is lock protected, and a cached result is only reused when every input Typst
+  tracked is identical, so it can make a call faster but never hand it another call's data. The native layer
+  clears it after every document; a call running at that moment loses cache hits, not correctness.
+- The interner for file names. Each distinct name stays allocated for the life of the process, so use stable
+  names such as `data.json` rather than a new name per call.
+- rayon's global thread pool, which Typst lays out and exports on in parallel.
 
 ## Native layer
 
@@ -84,7 +102,9 @@ a second when nothing changed.
   `manylinux_2_28` images, so the `.so` runs on glibc 2.28 and newer), packs them into one package and runs the
   tests on every platform against that package.
 - `ci.yml` runs it for pushes to `main` and pull requests.
-- `publish.yml` runs it for a `vX.Y.Z` tag and pushes the package to nuget.org through trusted publishing.
+- `publish.yml` runs it for every pushed tag and pushes the package to nuget.org through trusted publishing
+  (policy for `publish.yml`, environment `release`). The tag is the version: `v1.2.3`, `1.2.3` or a prerelease
+  such as `v1.2.3-beta.1`; any other tag fails the workflow before anything is built.
 
 To release, tag the commit and push the tag:
 

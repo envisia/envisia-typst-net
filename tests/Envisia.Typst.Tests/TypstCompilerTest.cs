@@ -154,6 +154,86 @@ public class TypstCompilerTest
         Encoding.ASCII.GetString(pdf, 0, 5).ShouldBe("%PDF-");
     }
 
+    [Test]
+    public void Names_Typst_As_The_Creator_By_Default()
+    {
+        var raw = Encoding.Latin1.GetString(CompileWithCreator(null));
+
+        raw.ShouldContain("/Creator(Typst ");
+        raw.ShouldContain("<xmp:CreatorTool>Typst ");
+    }
+
+    [Test]
+    public void Writes_The_Supplied_Creator()
+    {
+        var raw = Encoding.UTF8.GetString(CompileWithCreator("Envisia Angebotsgröße"));
+
+        raw.ShouldContain("<xmp:CreatorTool>Envisia Angebotsgröße</xmp:CreatorTool>");
+        raw.ShouldContain("/Creator");
+        raw.ShouldNotContain("Typst ");
+    }
+
+    [Test]
+    public void Leaves_The_Creator_Out_When_It_Is_Empty()
+    {
+        var raw = Encoding.Latin1.GetString(CompileWithCreator(string.Empty));
+
+        raw.ShouldNotContain("/Creator");
+        raw.ShouldNotContain("CreatorTool");
+    }
+
+    [Test]
+    public void Concurrent_Calls_Produce_The_Same_Pdf_As_A_Call_On_Its_Own()
+    {
+        var requests = Enumerable.Range(1, 8).Select(CreateIsolatedRequest).ToArray();
+        var expected = requests.Select(TypstCompiler.CompilePdf).ToArray();
+        for (var i = 0; i < expected.Length; i++)
+        {
+            Encoding.Latin1.GetString(expected[i]).ShouldContain($"<xmp:CreatorTool>Aufruf {i + 1}</xmp:CreatorTool>");
+        }
+
+        var actual = new byte[96][];
+        Parallel.For(
+            0,
+            actual.Length,
+            new ParallelOptions { MaxDegreeOfParallelism = 12 },
+            i => actual[i] = TypstCompiler.CompilePdf(requests[i % requests.Length])
+        );
+
+        for (var i = 0; i < actual.Length; i++)
+        {
+            actual[i].AsSpan().SequenceEqual(expected[i % requests.Length]).ShouldBeTrue($"call {i}");
+        }
+    }
+
+    // Every request uses the same file name with different content, a different date and a different creator, so a
+    // call that saw another call's inputs would produce different bytes.
+    private static TypstCompileRequest CreateIsolatedRequest(int number)
+    {
+        return new TypstCompileRequest
+        {
+            Markup =
+                "#let d = json(\"data.json\")\n#set document(date: datetime.today())\n#set text(font: \"Open Sans\")\n"
+                + "#for i in range(d.pages) [Seite #(i + 1) von #d.name #pagebreak(weak: true)]",
+            Fonts = Fonts,
+            Files = [new TypstFile("data.json", JsonSerializer.SerializeToUtf8Bytes(new { name = $"Dokument {number}", pages = number }))],
+            Today = new DateOnly(2024, 1, number),
+            Creator = $"Aufruf {number}",
+        };
+    }
+
+    private static byte[] CompileWithCreator(string? creator)
+    {
+        return TypstCompiler.CompilePdf(
+            new TypstCompileRequest
+            {
+                Markup = "#set text(font: \"Open Sans\")\n#text(\"Hallo\")",
+                Fonts = Fonts,
+                Creator = creator,
+            }
+        );
+    }
+
     private static byte[] LoadFont()
     {
         using var stream = Assembly

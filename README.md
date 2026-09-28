@@ -75,7 +75,8 @@ Typst itself keeps three things process wide, which a binding cannot scope to on
 
 - comemo's memoization cache. It is lock protected, and a cached result is only reused when every input Typst
   tracked is identical, so it can make a call faster but never hand it another call's data. The native layer
-  clears it after every document; a call running at that moment loses cache hits, not correctness.
+  evicts it after every document without taking what running calls still use (see below), so calls running in
+  parallel keep their cache hits.
 - The interner for file names. Each distinct name stays allocated for the life of the process, so use stable
   names such as `data.json` rather than a new name per call.
 - rayon's global thread pool, which Typst lays out and exports on in parallel.
@@ -97,11 +98,20 @@ Memory ownership: the caller owns the input buffers and only has to keep them al
 the bytes out and always calls `envisia_typst_result_free`, including on the error paths. A Rust panic is caught
 at the boundary and reported as a status rather than unwinding into the CLR.
 
-Typst memoizes layout in comemo's process wide cache. The native layer clears it after every document
-(`comemo::evict(0)`): each document here is rendered once, and a large one would otherwise stay resident until
-later calls aged it out. The crate must depend on the comemo version Typst itself uses; with another one
-`comemo::evict` clears a cache Typst never fills and the memory grows with every distinct document.
-`same_comemo_as_typst` in `lib.rs` turns such a mismatch into a build error.
+Typst memoizes layout in comemo's process wide cache. Each document here is rendered once, and a large one would
+otherwise stay resident until later calls aged it out, so the native layer evicts the cache whenever a call ends,
+also when it panics. The call that ends last clears it (`comemo::evict(0)`). A call that ends while others still
+run only evicts entries older than the oldest of them: every eviction ages each entry by one and a cache hit
+resets it, so what a running call has used since it started stays. Clearing everything instead makes a call lose
+the layout its next pass reuses whenever another one ends next to it. Measured on macOS arm64: a 2,000 entry report
+rendered next to a stream of small ones took 1.8 s instead of 1.1 s (1.0 s on its own), and four threads
+rendering 1,000 entry reports back to back finished 120 of them in 40 s instead of 25 s. The price is memory
+while calls overlap, up to about 1.3 GB of native memory in use in that run instead of 0.5 GB; once no call runs
+the cache is empty either way.
+
+The crate must depend on the comemo version Typst itself uses; with another one `comemo::evict` clears a cache
+Typst never fills and the memory grows with every distinct document. `same_comemo_as_typst` in `lib.rs` turns
+such a mismatch into a build error.
 
 ## Building
 

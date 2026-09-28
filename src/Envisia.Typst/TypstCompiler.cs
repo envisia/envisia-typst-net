@@ -6,16 +6,86 @@ using Envisia.Typst.Interop;
 namespace Envisia.Typst;
 
 /// <summary>Entry point to the bundled Typst compiler.</summary>
-public static unsafe class TypstCompiler
+public static class TypstCompiler
 {
-    private const uint ExpectedAbiVersion = 3;
+    private const uint ExpectedAbiVersion = 4;
 
     /// <summary>
     /// Compiles Typst markup into PDF bytes. Everything the document needs — fonts and referenced files — is passed
     /// in; the compiler touches neither the file system nor the network.
     /// </summary>
     /// <exception cref="TypstCompileException">The markup did not compile, or the inputs were rejected.</exception>
+    /// <exception cref="ObjectDisposedException">A font or file lies in a <see cref="TypstBuffer"/> that was disposed.</exception>
     public static byte[] CompilePdf(TypstCompileRequest request)
+    {
+        using var pdf = Compile(request);
+        return pdf.GetSpan().ToArray();
+    }
+
+    /// <summary>
+    /// Compiles Typst markup and writes the PDF to <paramref name="destination"/>, straight from the memory the native
+    /// library produced it in. Nothing is written when the document does not compile.
+    /// </summary>
+    /// <inheritdoc cref="CompilePdf(TypstCompileRequest)" path="/exception"/>
+    public static void CompilePdf(TypstCompileRequest request, Stream destination)
+    {
+        ValidateDestination(destination);
+        using var pdf = Compile(request);
+        destination.Write(pdf.GetSpan());
+    }
+
+    /// <summary>
+    /// Compiles Typst markup and writes the PDF to <paramref name="destination"/>, straight from the memory the native
+    /// library produced it in. Nothing is written when the document does not compile.
+    /// </summary>
+    /// <remarks>
+    /// Only the write is asynchronous. Typst compiles on the calling thread before the method returns its task, as
+    /// in <see cref="CompilePdf(TypstCompileRequest)"/>.
+    /// </remarks>
+    /// <inheritdoc cref="CompilePdf(TypstCompileRequest)" path="/exception"/>
+    public static Task CompilePdfAsync(
+        TypstCompileRequest request,
+        Stream destination,
+        CancellationToken cancellationToken = default
+    )
+    {
+        ValidateDestination(destination);
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return Task.FromCanceled(cancellationToken);
+        }
+
+        TypstPdf pdf;
+        try
+        {
+            pdf = Compile(request);
+        }
+        catch (Exception exception)
+        {
+            return Task.FromException(exception);
+        }
+
+        return WriteAsync(pdf, destination, cancellationToken);
+    }
+
+    private static async Task WriteAsync(TypstPdf pdf, Stream destination, CancellationToken cancellationToken)
+    {
+        using (pdf)
+        {
+            await destination.WriteAsync(pdf.Memory, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static void ValidateDestination(Stream destination)
+    {
+        ArgumentNullException.ThrowIfNull(destination);
+        if (!destination.CanWrite)
+        {
+            throw new ArgumentException("the destination stream is not writable", nameof(destination));
+        }
+    }
+
+    private static TypstPdf Compile(TypstCompileRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentException.ThrowIfNullOrEmpty(request.Markup);
@@ -41,30 +111,24 @@ public static unsafe class TypstCompiler
             names[i] = Encoding.UTF8.GetBytes(request.Files[i].Name);
         }
 
-        var handles = new List<MemoryHandle>(request.Fonts.Count + request.Files.Count);
+        var inputs = new Inputs(request.Fonts.Count + request.Files.Count);
         try
         {
-            var fonts = new TypstBuffer[request.Fonts.Count];
+            var fonts = new TypstNativeBuffer[request.Fonts.Count];
             for (var i = 0; i < request.Fonts.Count; i++)
             {
-                var handle = request.Fonts[i].Data.Pin();
-                handles.Add(handle);
-                fonts[i] = new TypstBuffer
-                {
-                    Data = (nint)handle.Pointer,
-                    Length = (nuint)request.Fonts[i].Data.Length,
-                };
+                fonts[i] = inputs.Add(request.Fonts[i].Data);
             }
 
-            var files = new TypstNamedBuffer[request.Files.Count];
+            var files = new TypstNativeNamedBuffer[request.Files.Count];
             for (var i = 0; i < request.Files.Count; i++)
             {
-                var handle = request.Files[i].Data.Pin();
-                handles.Add(handle);
-                files[i] = new TypstNamedBuffer
+                var data = inputs.Add(request.Files[i].Data);
+                files[i] = new TypstNativeNamedBuffer
                 {
-                    Data = (nint)handle.Pointer,
-                    DataLength = (nuint)request.Files[i].Data.Length,
+                    Data = data.Data,
+                    DataLength = data.Length,
+                    Owner = data.Owner,
                 };
             }
 
@@ -72,20 +136,17 @@ public static unsafe class TypstCompiler
         }
         finally
         {
-            foreach (var handle in handles)
-            {
-                handle.Dispose();
-            }
+            inputs.Dispose();
         }
     }
 
-    private static byte[] Invoke(
+    private static unsafe TypstPdf Invoke(
         TypstCompileRequest request,
         byte[] markup,
         byte[] creator,
         byte[] standards,
-        TypstBuffer[] fonts,
-        TypstNamedBuffer[] files,
+        TypstNativeBuffer[] fonts,
+        TypstNativeNamedBuffer[] files,
         byte[][] names
     )
     {
@@ -96,9 +157,9 @@ public static unsafe class TypstCompiler
             fixed (byte* creatorPtr = creator)
             fixed (byte* standardsPtr = standards)
             {
-                fixed (TypstBuffer* fontPtr = fonts)
+                fixed (TypstNativeBuffer* fontPtr = fonts)
                 {
-                    fixed (TypstNamedBuffer* filePtr = files)
+                    fixed (TypstNativeNamedBuffer* filePtr = files)
                     {
                         for (var i = 0; i < names.Length; i++)
                         {
@@ -127,7 +188,7 @@ public static unsafe class TypstCompiler
                             &result
                         );
 
-                        return ReadResult(&result);
+                        return TypstPdf.Take(result);
                     }
                 }
             }
@@ -144,30 +205,45 @@ public static unsafe class TypstCompiler
         }
     }
 
-    private static byte[] ReadResult(TypstNativeResult* result)
+    /// <summary>
+    /// Keeps the fonts and files readable while Typst runs: managed memory is pinned for the native side to copy, the
+    /// memory of a <see cref="TypstBuffer"/> is shared and held by a reference.
+    /// </summary>
+    private readonly unsafe struct Inputs(int capacity) : IDisposable
     {
-        try
+        private readonly List<MemoryHandle> _pins = new(capacity);
+        private readonly List<TypstBuffer> _buffers = [];
+
+        public TypstNativeBuffer Add(ReadOnlyMemory<byte> data)
         {
-            var message =
-                result->Message == 0 || result->MessageLength == 0
-                    ? string.Empty
-                    : Encoding.UTF8.GetString((byte*)result->Message, (int)result->MessageLength);
-
-            if (result->Status != TypstStatus.Ok)
+            if (TypstBuffer.TryGet(data, out var buffer, out var pointer, out var length))
             {
-                throw new TypstCompileException(message);
+                var owner = buffer.AddReference();
+                _buffers.Add(buffer);
+                return new TypstNativeBuffer
+                {
+                    Data = (nint)pointer,
+                    Length = (nuint)length,
+                    Owner = owner,
+                };
             }
 
-            if (result->Pdf == 0 || result->PdfLength == 0)
-            {
-                throw new TypstCompileException("typst reported success but produced no PDF bytes");
-            }
-
-            return new ReadOnlySpan<byte>((byte*)result->Pdf, (int)result->PdfLength).ToArray();
+            var pin = data.Pin();
+            _pins.Add(pin);
+            return new TypstNativeBuffer { Data = (nint)pin.Pointer, Length = (nuint)data.Length };
         }
-        finally
+
+        public void Dispose()
         {
-            TypstNative.ResultFree(result);
+            foreach (var pin in _pins)
+            {
+                pin.Dispose();
+            }
+
+            foreach (var buffer in _buffers)
+            {
+                buffer.Release();
+            }
         }
     }
 }

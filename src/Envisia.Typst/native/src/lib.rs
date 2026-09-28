@@ -1,3 +1,4 @@
+mod buffer;
 mod world;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -12,19 +13,24 @@ use typst::{World, WorldExt};
 use typst_layout::PagedDocument;
 use typst_pdf::{PdfOptions, PdfStandard, PdfStandards};
 
+use crate::buffer::NativeBuffer;
 use crate::world::EnvisiaWorld;
 
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = 4;
 
 pub const STATUS_OK: i32 = 0;
 pub const STATUS_COMPILE_ERROR: i32 = 1;
 pub const STATUS_INVALID_INPUT: i32 = 2;
 pub const STATUS_PANIC: i32 = 3;
+pub const STATUS_OUT_OF_MEMORY: i32 = 4;
 
+/// `owner` is null for memory the caller owns, which is copied, or a sealed buffer that `ptr` points into, which is
+/// shared.
 #[repr(C)]
 pub struct EvBuffer {
     pub ptr: *const u8,
     pub len: usize,
+    pub owner: *const NativeBuffer,
 }
 
 #[repr(C)]
@@ -33,6 +39,7 @@ pub struct EvNamedBuffer {
     pub name_len: usize,
     pub data: *const u8,
     pub data_len: usize,
+    pub owner: *const NativeBuffer,
 }
 
 #[repr(C)]
@@ -83,7 +90,8 @@ pub extern "C" fn envisia_typst_abi_version() -> u32 {
 /// # Safety
 /// `result` must point at a writable `EvTypstResult`. The slice arguments must either be null with a
 /// zero count or point at `count` readable elements that stay alive for the duration of the call.
-/// Every buffer referenced from an element must stay readable for the duration of the call. With `creator_set`
+/// Every buffer referenced from an element must stay readable for the duration of the call, and an element's `owner`
+/// must be null or a live handle from `envisia_typst_buffer_new`. With `creator_set`
 /// non-zero, `creator` must point at `creator_len` readable bytes (or be null with a zero length). `standards` is a
 /// comma separated list of Typst's standard names (`a-3b`, `ua-1`, ...) in `standards_len` readable bytes, or null
 /// with a zero length for none; `tagged` non-zero writes a tagged PDF.
@@ -123,14 +131,8 @@ pub unsafe extern "C" fn envisia_typst_compile_pdf(
         };
 
         let fonts = match read_buffers(fonts, font_count) {
-            Some(value) => value,
-            None => {
-                return EvTypstResult::owned(
-                    STATUS_INVALID_INPUT,
-                    Vec::new(),
-                    "font list pointer is null".to_owned(),
-                )
-            }
+            Ok(value) => value,
+            Err(message) => return EvTypstResult::owned(STATUS_INVALID_INPUT, Vec::new(), message),
         };
 
         if fonts.is_empty() {
@@ -142,14 +144,8 @@ pub unsafe extern "C" fn envisia_typst_compile_pdf(
         }
 
         let files = match read_named_buffers(files, file_count) {
-            Some(value) => value,
-            None => {
-                return EvTypstResult::owned(
-                    STATUS_INVALID_INPUT,
-                    Vec::new(),
-                    "file list pointer is null or a name is not valid UTF-8".to_owned(),
-                )
-            }
+            Ok(value) => value,
+            Err(message) => return EvTypstResult::owned(STATUS_INVALID_INPUT, Vec::new(), message),
         };
 
         let creator = if creator_set == 0 {
@@ -447,58 +443,65 @@ unsafe fn read_str(ptr: *const u8, len: usize) -> Option<String> {
         .map(|value| value.to_owned())
 }
 
-unsafe fn read_buffers(ptr: *const EvBuffer, count: usize) -> Option<Vec<Bytes>> {
+unsafe fn read_bytes(
+    owner: *const NativeBuffer,
+    data: *const u8,
+    len: usize,
+) -> Result<Bytes, String> {
+    if !owner.is_null() {
+        return buffer::share(owner, data, len);
+    }
+
+    if data.is_null() || len == 0 {
+        return Ok(Bytes::new(Vec::new()));
+    }
+
+    Ok(Bytes::new(std::slice::from_raw_parts(data, len).to_vec()))
+}
+
+unsafe fn read_buffers(ptr: *const EvBuffer, count: usize) -> Result<Vec<Bytes>, String> {
     if count == 0 {
-        return Some(Vec::new());
+        return Ok(Vec::new());
     }
 
     if ptr.is_null() {
-        return None;
+        return Err("font list pointer is null".to_owned());
     }
 
     let mut out = Vec::with_capacity(count);
     for entry in std::slice::from_raw_parts(ptr, count) {
-        if entry.ptr.is_null() || entry.len == 0 {
-            continue;
+        let bytes = read_bytes(entry.owner, entry.ptr, entry.len)?;
+        if !bytes.is_empty() {
+            out.push(bytes);
         }
-
-        out.push(Bytes::new(
-            std::slice::from_raw_parts(entry.ptr, entry.len).to_vec(),
-        ));
     }
 
-    Some(out)
+    Ok(out)
 }
 
 unsafe fn read_named_buffers(
     ptr: *const EvNamedBuffer,
     count: usize,
-) -> Option<Vec<(String, Bytes)>> {
+) -> Result<Vec<(String, Bytes)>, String> {
     if count == 0 {
-        return Some(Vec::new());
+        return Ok(Vec::new());
     }
 
     if ptr.is_null() {
-        return None;
+        return Err("file list pointer is null".to_owned());
     }
 
     let mut out = Vec::with_capacity(count);
     for entry in std::slice::from_raw_parts(ptr, count) {
-        let name = read_str(entry.name, entry.name_len)?;
-        if name.is_empty() {
-            return None;
-        }
-
-        let data = if entry.data.is_null() || entry.data_len == 0 {
-            Vec::new()
-        } else {
-            std::slice::from_raw_parts(entry.data, entry.data_len).to_vec()
+        let name = match read_str(entry.name, entry.name_len) {
+            Some(name) if !name.is_empty() => name,
+            _ => return Err("a file name is empty or not valid UTF-8".to_owned()),
         };
 
-        out.push((name, Bytes::new(data)));
+        out.push((name, read_bytes(entry.owner, entry.data, entry.data_len)?));
     }
 
-    Some(out)
+    Ok(out)
 }
 
 #[cfg(test)]

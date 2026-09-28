@@ -13,9 +13,9 @@ internal static unsafe partial class TypstNative
     internal static partial int CompilePdf(
         byte* markup,
         nuint markupLength,
-        TypstBuffer* fonts,
+        TypstNativeBuffer* fonts,
         nuint fontCount,
-        TypstNamedBuffer* files,
+        TypstNativeNamedBuffer* files,
         nuint fileCount,
         int year,
         byte month,
@@ -31,4 +31,19 @@ internal static unsafe partial class TypstNative
 
     [LibraryImport(LibraryName, EntryPoint = "envisia_typst_result_free")]
     internal static partial void ResultFree(TypstNativeResult* result);
+
+    [LibraryImport(LibraryName, EntryPoint = "envisia_typst_buffer_new")]
+    internal static partial nint BufferNew(nuint capacity);
+
+    [LibraryImport(LibraryName, EntryPoint = "envisia_typst_buffer_reserve")]
+    internal static partial int BufferReserve(nint buffer, nuint additional, byte** spare, nuint* spareLength);
+
+    [LibraryImport(LibraryName, EntryPoint = "envisia_typst_buffer_commit")]
+    internal static partial int BufferCommit(nint buffer, nuint count);
+
+    [LibraryImport(LibraryName, EntryPoint = "envisia_typst_buffer_seal")]
+    internal static partial int BufferSeal(nint buffer, byte** data, nuint* length);
+
+    [LibraryImport(LibraryName, EntryPoint = "envisia_typst_buffer_release")]
+    internal static partial void BufferRelease(nint buffer);
 }

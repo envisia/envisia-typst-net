@@ -325,6 +325,74 @@ public class TypstCompilerTest
         }
     }
 
+    [Test]
+    public void Writes_The_Pdf_To_A_Stream()
+    {
+        var request = StreamRequest("#set text(font: \"Open Sans\")\n#text(\"Strom\")");
+        using var destination = new MemoryStream();
+        destination.Write("vorher"u8);
+
+        TypstCompiler.CompilePdf(request, destination);
+
+        destination.ToArray().AsSpan(6).SequenceEqual(TypstCompiler.CompilePdf(request)).ShouldBeTrue();
+    }
+
+    [Test]
+    public async Task Writes_The_Pdf_To_A_Stream_Asynchronously()
+    {
+        var request = StreamRequest("#set text(font: \"Open Sans\")\n#text(\"Strom\")");
+        using var destination = new MemoryStream();
+
+        await TypstCompiler.CompilePdfAsync(request, destination);
+
+        destination.ToArray().AsSpan().SequenceEqual(TypstCompiler.CompilePdf(request)).ShouldBeTrue();
+    }
+
+    [Test]
+    public async Task Writes_Nothing_When_The_Document_Does_Not_Compile()
+    {
+        var request = StreamRequest("#panic(\"kaputt\")");
+        using var destination = new MemoryStream();
+
+        Should.Throw<TypstCompileException>(() => TypstCompiler.CompilePdf(request, destination));
+        var pending = TypstCompiler.CompilePdfAsync(request, destination);
+        (await Should.ThrowAsync<TypstCompileException>(pending)).Diagnostics.ShouldContain("kaputt");
+
+        destination.Length.ShouldBe(0);
+    }
+
+    [Test]
+    public async Task Does_Not_Compile_When_The_Write_Is_Already_Cancelled()
+    {
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync();
+        using var destination = new MemoryStream();
+
+        var pending = TypstCompiler.CompilePdfAsync(
+            StreamRequest("#panic(\"kaputt\")"),
+            destination,
+            cancellation.Token
+        );
+
+        pending.IsCanceled.ShouldBeTrue();
+        destination.Length.ShouldBe(0);
+    }
+
+    [Test]
+    public void Rejects_A_Destination_It_Cannot_Write_To()
+    {
+        var request = StreamRequest("#text(\"x\")");
+        using var readOnly = new MemoryStream([], writable: false);
+
+        Should.Throw<ArgumentException>(() => TypstCompiler.CompilePdf(request, readOnly));
+        Should.Throw<ArgumentException>(() => TypstCompiler.CompilePdfAsync(request, readOnly));
+    }
+
+    private static TypstCompileRequest StreamRequest(string markup)
+    {
+        return new TypstCompileRequest { Markup = markup, Fonts = Fonts };
+    }
+
     // Every request uses the same file name with different content, a different date and a different creator, so a
     // call that saw another call's inputs would produce different bytes.
     private static TypstCompileRequest CreateIsolatedRequest(int number)
@@ -335,7 +403,13 @@ public class TypstCompilerTest
                 "#let d = json(\"data.json\")\n#set document(date: datetime.today())\n#set text(font: \"Open Sans\")\n"
                 + "#for i in range(d.pages) [Seite #(i + 1) von #d.name #pagebreak(weak: true)]",
             Fonts = Fonts,
-            Files = [new TypstFile("data.json", JsonSerializer.SerializeToUtf8Bytes(new { name = $"Dokument {number}", pages = number }))],
+            Files =
+            [
+                new TypstFile(
+                    "data.json",
+                    JsonSerializer.SerializeToUtf8Bytes(new { name = $"Dokument {number}", pages = number })
+                ),
+            ],
             Today = new DateOnly(2024, 1, number),
             Creator = $"Aufruf {number}",
         };

@@ -2,6 +2,7 @@ mod world;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use typst::diag::{Severity, SourceDiagnostic, Warned};
 use typst::ecow::EcoVec;
@@ -246,14 +247,66 @@ fn compile(
         );
     }
 
-    let result = export(&world, options);
+    let _running = Running::start();
+    export(&world, options)
+}
 
-    // comemo's memoization cache is process global and never shrinks on its own. Each document is rendered once, so
-    // nothing is kept for the next call: a large report otherwise stays resident until later calls age it out.
-    // This must be the comemo version typst itself uses, another one has a cache of its own that typst never fills.
-    comemo::evict(0);
+/// Evicts comemo's cache when a compilation ends, also when it panics.
+///
+/// comemo's memoization cache is process global and never shrinks on its own. Each document is rendered once, so
+/// nothing is kept for the next call: a large report otherwise stays resident until later calls age it out.
+/// Clearing it while another compilation runs throws away the layout that one is about to reuse. Every eviction
+/// ages each entry by one and a cache hit resets its age, so a compilation that ends while others still run only
+/// evicts what is older than the oldest of them, and the one that ends last clears everything.
+/// This must be the comemo version typst itself uses, another one has a cache of its own that typst never fills.
+struct Running {
+    started: usize,
+}
 
-    result
+struct Evictions {
+    /// Evictions so far.
+    count: usize,
+    /// `count` at the start of every running compilation.
+    running: Vec<usize>,
+}
+
+static EVICTIONS: Mutex<Evictions> = Mutex::new(Evictions {
+    count: 0,
+    running: Vec::new(),
+});
+
+fn evictions() -> MutexGuard<'static, Evictions> {
+    EVICTIONS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl Running {
+    fn start() -> Self {
+        let mut evictions = evictions();
+        let started = evictions.count;
+        evictions.running.push(started);
+        Running { started }
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let mut evictions = evictions();
+        if let Some(index) = evictions
+            .running
+            .iter()
+            .position(|&started| started == self.started)
+        {
+            evictions.running.swap_remove(index);
+        }
+
+        // An entry the oldest running compilation used has been through at most `count - oldest` evictions.
+        let max_age = match evictions.running.iter().min() {
+            Some(&oldest) => evictions.count - oldest + 1,
+            None => 0,
+        };
+        comemo::evict(max_age);
+        evictions.count += 1;
+    }
 }
 
 // Stops compiling once typst moves to another comemo than this crate, rather than evict clearing the wrong cache.
@@ -446,4 +499,63 @@ unsafe fn read_named_buffers(
     }
 
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    #[comemo::memoize]
+    fn square(value: u64) -> u64 {
+        CALLS.fetch_add(1, Ordering::SeqCst);
+        value * value
+    }
+
+    fn computed(value: u64) -> bool {
+        let before = CALLS.load(Ordering::SeqCst);
+        square(value);
+        CALLS.load(Ordering::SeqCst) != before
+    }
+
+    fn running() -> usize {
+        evictions().running.len()
+    }
+
+    // comemo's cache and the running compilations are process wide, so the whole sequence is one test.
+    #[test]
+    fn eviction_keeps_what_running_compilations_use() {
+        // a compilation keeps its entries however many others end next to it, a panicking one included
+        let long = Running::start();
+        assert!(computed(1));
+        for _ in 0..3 {
+            drop(Running::start());
+        }
+        let outcome = std::panic::catch_unwind(|| {
+            let _running = Running::start();
+            panic!("compilation failed");
+        });
+        assert!(outcome.is_err());
+        assert_eq!(running(), 1);
+        assert!(!computed(1));
+
+        // the last compilation clears everything
+        drop(long);
+        assert_eq!(running(), 0);
+        assert!(computed(1));
+
+        // an entry goes once every compilation that ran next to it has ended
+        let first = Running::start();
+        assert!(computed(2));
+        let second = Running::start();
+        drop(first);
+        let third = Running::start();
+        drop(second);
+        assert!(computed(2));
+        drop(third);
+        assert_eq!(running(), 0);
+    }
 }

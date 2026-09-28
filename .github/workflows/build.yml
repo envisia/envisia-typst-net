@@ -78,6 +78,10 @@ jobs:
         working-directory: src/Envisia.Typst/native
         run: cargo build --release --locked --target ${{ matrix.target }}
 
+      - name: Test
+        working-directory: src/Envisia.Typst/native
+        run: cargo test --release --locked --target ${{ matrix.target }}
+
       - name: Stage
         run: |
           mkdir -p "staging/${{ matrix.rid }}"

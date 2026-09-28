@@ -47,6 +47,41 @@ var pdf = TypstCompiler.CompilePdf(
   need it; a long report nobody reads with assistive technology renders faster and smaller without it.
 - `CompilePdf` blocks the calling thread while Typst compiles.
 
+### Streams
+
+Fonts and files are `ReadOnlyMemory<byte>`. Managed memory is pinned for the call and copied into the native
+library, so while Typst runs every input exists twice, again on every call. A `TypstBuffer` avoids both: it reads a
+stream straight into memory the native library owns, and every compilation shares those bytes with Typst instead of
+copying them. The PDF can go the same way out, straight from the memory Typst wrote it to into a stream.
+
+```csharp
+using var font = TypstBuffer.FromStream(File.OpenRead("OpenSans-Regular.ttf"));
+using var cover = await TypstBuffer.FromStreamAsync(upload, cancellationToken);
+
+await TypstCompiler.CompilePdfAsync(
+    new TypstCompileRequest
+    {
+        Markup = markup,
+        Fonts = [new TypstFont(font)],
+        Files = [new TypstFile("cover.svg", cover)],
+    },
+    response.Body,
+    cancellationToken);
+```
+
+- `FromStream` and `FromStreamAsync` read from the current position to the end. A seekable stream is read into
+  memory of its remaining length, any other into memory that grows as needed and is trimmed at the end. The content
+  never passes through a managed array.
+- A buffer never changes once it is read, and any number of concurrent compilations can use it, which suits fonts:
+  read them once and keep them for the life of the process. A slice of `Memory` is shared as well.
+- `Dispose` gives the buffer up. Its memory is freed once no compilation uses it any more, so it can be disposed
+  while another thread still compiles with it; a compilation that starts afterwards throws `ObjectDisposedException`.
+- Typst still needs a file's whole content before it can use it. A buffer saves the copies, not the memory the file
+  itself takes.
+- `CompilePdf(request, stream)` and `CompilePdfAsync(request, stream, cancellationToken)` skip the managed `byte[]`
+  the plain `CompilePdf` returns and write nothing when the document does not compile. `CompilePdfAsync` compiles on
+  the calling thread like `CompilePdf`; only the write is asynchronous.
+
 ### Characters the fonts cannot show
 
 Typst only has the fonts it is handed. A character none of them has is drawn as the font's missing glyph box, and
@@ -69,7 +104,9 @@ emoji, symbol font code points or scripts the fonts lack, is dropped. Text that 
 `CompilePdf` can be called from any number of threads at once. The binding keeps no state between calls: every
 call builds its own Typst world from the request's markup, fonts, files, date and creator, and nothing of it
 outlives the call. A test compiles eight different documents that share a file name on twelve threads and checks
-every PDF is byte for byte what the same request produces on its own.
+every PDF is byte for byte what the same request produces on its own. A `TypstBuffer` is the one input meant to be
+shared between calls; it never changes once it is read, and another test compiles with one font buffer on twelve
+threads the same way.
 
 Typst itself keeps three things process wide, which a binding cannot scope to one call:
 
@@ -92,11 +129,17 @@ The C ABI is deliberately small:
 | `envisia_typst_abi_version` | Version handshake, checked on every call. |
 | `envisia_typst_compile_pdf` | Compiles markup into an `EvTypstResult`. |
 | `envisia_typst_result_free` | Releases everything the result owns. |
+| `envisia_typst_buffer_new` / `_reserve` / `_commit` / `_seal` | Fill a native buffer from the managed side, then freeze it. |
+| `envisia_typst_buffer_release` | Gives up the managed side's reference to a buffer. |
 
-Memory ownership: the caller owns the input buffers and only has to keep them alive for the duration of the call
-(the managed side pins them). Everything in the result is allocated and freed by Rust; the managed side copies
-the bytes out and always calls `envisia_typst_result_free`, including on the error paths. A Rust panic is caught
-at the boundary and reported as a status rather than unwinding into the CLR.
+Memory ownership: a plain input buffer belongs to the caller, who only has to keep it alive for the duration of the
+call (the managed side pins it); the native side copies it. A buffer from `envisia_typst_buffer_new` is an `Arc` in
+Rust whose handle owns one reference. The managed side fills it through `_reserve` and `_commit` and seals it, after
+which it can no longer be written. An input whose `owner` names a sealed buffer is shared with Typst, which takes a
+reference of its own for as long as it holds the bytes, in a world or in comemo's cache, so releasing the handle
+during a compilation is safe. Everything in the result is allocated and freed by Rust; the managed side copies the
+bytes out or writes them to a stream and always calls `envisia_typst_result_free`, including on the error paths. A
+Rust panic is caught at the boundary, in every call, and reported as a status rather than unwinding into the CLR.
 
 Typst memoizes layout in comemo's process wide cache. Each document here is rendered once, and a large one would
 otherwise stay resident until later calls aged it out, so the native layer evicts the cache whenever a call ends,
@@ -119,6 +162,8 @@ A local `dotnet build` or `dotnet test` compiles the native library for the host
 `cargo build --release` (through `Envisia.Typst.Native.targets`) and copies it next to the assembly.
 
 - A Rust toolchain is required. `native/rust-toolchain.toml` pins the channel.
+- `cargo test --release` in `native/` runs the native layer's own tests, CI runs them on every platform. They
+  cover the buffer calls the managed API never makes wrongly.
 - `EnvisiaTypstSkipNativeBuild=true` reuses whatever is in `native/target`.
 - `EnvisiaTypstLibraryPath=<path>` uses a prebuilt library instead of building one.
 

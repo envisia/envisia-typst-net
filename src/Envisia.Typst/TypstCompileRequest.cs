@@ -1,6 +1,6 @@
 namespace Envisia.Typst;
 
-/// <summary>Everything a single <see cref="TypstCompiler.CompilePdf"/> call needs.</summary>
+/// <summary>Everything a single <see cref="TypstCompiler.CompilePdf(TypstCompileRequest)"/> call needs.</summary>
 public sealed class TypstCompileRequest
 {
     /// <summary>The main document's Typst markup. Diagnostics refer to it as <c>main.typ</c>.</summary>

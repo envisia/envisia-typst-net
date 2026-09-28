@@ -3,8 +3,9 @@ using System.Runtime.InteropServices;
 namespace Envisia.Typst.Interop;
 
 [StructLayout(LayoutKind.Sequential)]
-internal struct TypstBuffer
+internal struct TypstNativeBuffer
 {
     public nint Data;
     public nuint Length;
+    public nint Owner;
 }

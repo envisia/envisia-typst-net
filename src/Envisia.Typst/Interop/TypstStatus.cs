@@ -6,4 +6,5 @@ internal static class TypstStatus
     public const int CompileError = 1;
     public const int InvalidInput = 2;
     public const int Panic = 3;
+    public const int OutOfMemory = 4;
 }
